@@ -1,0 +1,82 @@
+BÀI TẬP THỰC HÀNH TỔNG HỢP - SESSION 04: KỸ THUẬT PROMPTING NÂNG CAO (LOGIC & CHUỖI)
+
+PHẦN 1: BÁO CÁO THIẾT KẾ GIẢI PHÁP (KIẾN TRÚC PROMPT CHAINING)
+1. Bài toán thực tế:
+Tự động hóa quy trình tiếp nhận phản hồi khách hàng đa kênh (tin nhắn/email) cho doanh nghiệp thương mại điện tử: Phân loại ý định -> Trích xuất dữ liệu & Đánh giá rủi ro -> Soạn phản hồi cá nhân hóa.
+2. Kiến trúc Chuỗi khép kín (3 mắt xích):
+Thay vì dùng một prompt khổng lồ (dễ gây quá tải ngữ cảnh và ảo giác), hệ thống chia thành 3 bước tuần tự. Đầu ra (JSON) của bước trước là đầu vào của bước sau:
+* Bước 1 (Router & Guardrail): Lọc nhiễu, phân loại ý định và chặn dữ liệu dị biệt (spam, thiếu thông tin cốt lõi).
+* Bước 2 (Extractor & CoT): Suy luận từng bước (Chain-of-Thought) để bóc tách dữ liệu đơn hàng và tính mức độ nghiêm trọng.
+* Bước 3 (Generator): Sinh câu trả lời tự động dựa trên dữ liệu đã làm sạch ở Bước 2.
+3. Cơ chế Xử lý đứt gãy & Tối ưu Token:
+* Tối ưu token: Ép định dạng trả về là JSON tối giản (không giải thích thừa), mỗi bước chỉ truyền đúng các trường dữ liệu cần thiết sang bước kế tiếp.
+* Chống crash hệ thống (Circuit Breaker): Nếu Bước 1 phát hiện dữ liệu rác hoặc Bước 2 phát hiện thiếu Mã đơn hàng, hệ thống trả về cờ "halt": true để ngắt chuỗi ngay lập tức và chuyển sang hàng đợi nhân viên xử lý, tránh lãng phí token gọi Bước 3.
+PHẦN 2: HỆ THỐNG PROMPT THỰC THI TUẦN TỰ
+1. Prompt Bước 1: Phân loại & Chặn lỗi đầu vào (Input Guardrail)
+[Bắt đầu Prompt 1]
+Hệ thống: Phân tích tin nhắn khách hàng. Chỉ trả về JSON, không giải thích.
+Quy tắc:
+- Nếu tin nhắn là spam, vô nghĩa hoặc dưới 3 từ: gán intent = "INVALID", halt = true.
+- Phân loại intent vào 1 trong 3 nhóm: "ORDER_SUPPORT" (hỗ trợ đơn), "RETURN_REFUND" (đổi trả), "GENERAL_QA" (hỏi đáp chung).
+Input: "[Chèn tin nhắn thô]"
+Output JSON:
+{"intent": "", "halt": false, "reason": ""}
+[Kết thúc Prompt 1]
+2. Prompt Bước 2: Suy luận chuỗi & Trích xuất dữ liệu (CoT & Extraction)
+(Điều kiện chạy: Chỉ kích hoạt khi Bước 1 có "halt": false)
+[Bắt đầu Prompt 2]
+Hệ thống: Dựa vào tin nhắn và intent từ Bước 1, suy luận từng bước (CoT) trong trường "thought" rồi trích xuất thông tin. Chỉ trả về JSON.
+Quy tắc xử lý đứt gãy:
+- Nếu intent là "ORDER_SUPPORT" hoặc "RETURN_REFUND" nhưng KHÔNG tìm thấy mã đơn hàng (định dạng #DHxxx): gán halt = true, missing_field = "order_id".
+- Đánh giá mức độ ưu tiên (priority): "HIGH" nếu khách tức giận/hàng lỗi, ngược lại "NORMAL".
+Input:
+- Intent: [Output Bước 1]
+- Tin nhắn: "[Chèn tin nhắn thô]"
+Output JSON:
+{
+  "thought": "Phân tích ngắn gọn 1 câu",
+  "halt": false,
+  "missing_field": null,
+  "order_id": null,
+  "issue_summary": "",
+  "priority": ""
+}
+[Kết thúc Prompt 2]
+3. Prompt Bước 3: Sinh phản hồi chuẩn hóa (Response Generator)
+(Điều kiện chạy: Chỉ kích hoạt khi Bước 2 có "halt": false)
+[Bắt đầu Prompt 3]
+Hệ thống: Viết email/tin nhắn phản hồi khách hàng dựa trên dữ liệu JSON đã xác thực.
+Ràng buộc: Giọng văn lịch sự, ngắn gọn dưới 60 từ. Nếu priority = "HIGH", thêm lời xin lỗi chân thành và cam kết xử lý trong 2 giờ.
+Input JSON: [Output Bước 2]
+[Kết thúc Prompt 3]
+PHẦN 3: KẾT QUẢ CHẠY THỬ THỰC TẾ (SIMULATION)
+Trường hợp 1: Luồng chạy thành công (Dữ liệu hợp lệ)
+* Dữ liệu đầu vào: "Shop ơi đơn #DH908 của tôi giao nhầm màu áo rồi, đổi gấp cho tôi trong hôm nay nhé, bực mình quá!"
+* Output Bước 1:
+{"intent": "RETURN_REFUND", "halt": false, "reason": "Yêu cầu đổi hàng giao sai"}
+* Output Bước 2:
+{
+  "thought": "Khách hàng yêu cầu đổi hàng cho đơn #DH908 với thái độ bức xúc do lỗi giao nhầm màu.",
+  "halt": false,
+  "missing_field": null,
+  "order_id": "#DH908",
+  "issue_summary": "Giao nhầm màu áo",
+  "priority": "HIGH"
+}
+* Output Bước 3 (Kết quả cuối cùng gửi khách):
+"Chào bạn, chúng tôi thành thật xin lỗi vì sự cố giao nhầm màu cho đơn hàng #DH908. Bộ phận CSKH đã ghi nhận yêu cầu ở mức ưu tiên cao và sẽ liên hệ điều phối đổi hàng cho bạn trong vòng 2 giờ tới. Mong bạn thông cảm!"
+Trường hợp 2: Kích hoạt cơ chế xử lý đứt gãy (Bẫy thiếu dữ liệu)
+* Dữ liệu đầu vào: "Tôi muốn hoàn tiền vì sản phẩm không giống hình."
+* Output Bước 1:
+{"intent": "RETURN_REFUND", "halt": false, "reason": "Yêu cầu hoàn tiền"}
+* Output Bước 2 (Phát hiện lỗi & Ngắt chuỗi an toàn):
+{
+  "thought": "Khách yêu cầu hoàn tiền nhưng không cung cấp mã đơn hàng để tra cứu.",
+  "halt": true,
+  "missing_field": "order_id",
+  "order_id": null,
+  "issue_summary": "Sản phẩm không giống hình",
+  "priority": "NORMAL"
+}
+
+* Trạng thái hệ thống: Dừng gọi Bước 3, tự động kích hoạt kịch bản hỏi lại khách mã đơn hàng mà không gây lỗi hệ thống.
